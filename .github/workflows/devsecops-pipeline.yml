@@ -2,260 +2,49 @@ name: DevSecOps Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+    branches: [ "main" ]
 
 jobs:
-  # Job 1: SAST - Static Application Security Testing
-  sast-scan:
-    name: SAST - npm audit
+  security-pipeline:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v3
       with:
-        node-version: '18'
-        
-    - name: Install dependencies
+        node-version: 18
+
+    - name: Install Dependencies
       run: npm install
-      working-directory: ./juice-shop
-      continue-on-error: true
-      
-    - name: Run npm audit
-      run: |
-        npm audit --json > npm-audit-results.json || true
-        npm audit --audit-level=moderate || true
-      working-directory: ./juice-shop
-      
-    - name: Upload SAST results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: sast-results
-        path: juice-shop/npm-audit-results.json
 
-  # Job 2: SCA - Software Composition Analysis
-  sca-scan:
-    name: SCA - Trivy Scan
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Run Trivy vulnerability scanner in fs mode
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: './juice-shop'
-        format: 'json'
-        output: 'trivy-fs-results.json'
-        severity: 'CRITICAL,HIGH,MEDIUM'
-      continue-on-error: true
-        
-    - name: Upload SCA results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: sca-results
-        path: trivy-fs-results.json
+    # 🔐 SAST
+    - name: SAST - npm audit
+      run: |
+        npm audit --audit-level=high || true
 
-  # Job 3: Build Docker Image
-  build:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
-    needs: [sast-scan, sca-scan]
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-      
-    - name: Build Docker image
+    # 🔐 SCA
+    - name: Install Trivy
       run: |
-        cd juice-shop
-        docker build -t juice-shop:${{ github.sha }} .
-        docker tag juice-shop:${{ github.sha }} juice-shop:latest
-        
-    - name: Save Docker image
-      run: |
-        docker save juice-shop:latest | gzip > juice-shop-image.tar.gz
-      
-    - name: Upload Docker image artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: docker-image
-        path: juice-shop-image.tar.gz
-        retention-days: 1
+        sudo apt-get install wget -y
+        wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.48.0_Linux-64bit.deb
+        sudo dpkg -i trivy_0.48.0_Linux-64bit.deb
 
-  # Job 4: Container Security Scan
-  container-scan:
-    name: Container Security Scan
-    runs-on: ubuntu-latest
-    needs: build
-    
-    steps:
-    - name: Download Docker image
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image
-        
-    - name: Load Docker image
-      run: |
-        gunzip -c juice-shop-image.tar.gz | docker load
-      
-    - name: Run Trivy vulnerability scanner on Docker image
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 'juice-shop:latest'
-        format: 'json'
-        output: 'trivy-image-results.json'
-        severity: 'CRITICAL,HIGH'
-        exit-code: '0'
-      continue-on-error: true
-        
-    - name: Upload container scan results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: container-scan-results
-        path: trivy-image-results.json
+    - name: Trivy FS Scan
+      run: trivy fs .
 
-  # Job 5: DAST - Dynamic Application Security Testing
-  dast-scan:
-    name: DAST - OWASP ZAP
-    runs-on: ubuntu-latest
-    needs: container-scan
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Download Docker image
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image
-        
-    - name: Load and run Docker image
-      run: |
-        gunzip -c juice-shop-image.tar.gz | docker load
-        docker run -d -p 3000:3000 --name juice-shop juice-shop:latest
-        
-    - name: Wait for application to start
-      run: |
-        echo "Waiting for Juice Shop to start..."
-        for i in {1..30}; do
-          if curl -f http://localhost:3000 > /dev/null 2>&1; then
-            echo "Application is ready!"
-            exit 0
-          fi
-          echo "Attempt $i: Application not ready yet..."
-          sleep 5
-        done
-        echo "Application failed to start"
-        docker logs juice-shop
-        exit 1
-        
-    - name: Run OWASP ZAP Baseline Scan
-      uses: zaproxy/action-baseline@v0.12.0
-      with:
-        target: 'http://localhost:3000'
-        allow_issue_writing: false
-        cmd_options: '-a -j'
-      continue-on-error: true
-        
-    - name: Upload DAST results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: dast-results
-        path: |
-          report_html.html
-          report_json.json
+    # 🐳 Build Docker Image
+    - name: Build Docker Image
+      run: docker build -t juice-shop:latest .
 
-  # Job 6: Security Gate
-  security-gate:
-    name: Security Quality Gate
-    runs-on: ubuntu-latest
-    needs: [sast-scan, sca-scan, container-scan, dast-scan]
-    if: always()
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      
-    - name: Display structure
-      run: ls -R
-      
-    - name: Check security thresholds
+    # 🐳 Container Scan
+    - name: Trivy Image Scan
+      run: trivy image juice-shop:latest
+
+    # 🌐 DAST
+    - name: Run OWASP ZAP Baseline
       run: |
-        echo "=== Security Gate Check ==="
-        echo "Checking for critical vulnerabilities..."
-        
-        # Check if npm audit results exist
-        if [ -f "sast-results/npm-audit-results.json" ]; then
-          echo "✓ SAST results found"
-          CRITICAL_COUNT=$(cat sast-results/npm-audit-results.json | jq '.metadata.vulnerabilities.critical // 0' 2>/dev/null || echo 0)
-          echo "Critical npm vulnerabilities: $CRITICAL_COUNT"
-          
-          # Threshold: Warning if more than 10 critical (not failing for educational purposes)
-          if [ "$CRITICAL_COUNT" -gt 10 ]; then
-            echo "⚠️  WARNING: High number of critical vulnerabilities: $CRITICAL_COUNT"
-          fi
-        else
-          echo "⚠️  SAST results not found"
-        fi
-        
-        echo ""
-        echo "✅ Security Gate PASSED (Educational mode)"
-        
-    - name: Generate security summary
-      run: |
-        echo "# Security Scan Summary" > security-summary.md
-        echo "" >> security-summary.md
-        echo "**Date:** $(date)" >> security-summary.md
-        echo "" >> security-summary.md
-        echo "## Scan Results" >> security-summary.md
-        
-        if [ -f "sast-results/npm-audit-results.json" ]; then
-          echo "- ✅ SAST Scan: Completed" >> security-summary.md
-        else
-          echo "- ⚠️ SAST Scan: No results" >> security-summary.md
-        fi
-        
-        if [ -f "sca-results/trivy-fs-results.json" ]; then
-          echo "- ✅ SCA Scan: Completed" >> security-summary.md
-        else
-          echo "- ⚠️ SCA Scan: No results" >> security-summary.md
-        fi
-        
-        if [ -f "container-scan-results/trivy-image-results.json" ]; then
-          echo "- ✅ Container Scan: Completed" >> security-summary.md
-        else
-          echo "- ⚠️ Container Scan: No results" >> security-summary.md
-        fi
-        
-        if [ -f "dast-results/report_html.html" ]; then
-          echo "- ✅ DAST Scan: Completed" >> security-summary.md
-        else
-          echo "- ⚠️ DAST Scan: No results" >> security-summary.md
-        fi
-        
-        echo "" >> security-summary.md
-        echo "## Notes" >> security-summary.md
-        echo "This is an educational security pipeline for UAS DevSecOps." >> security-summary.md
-        
-        cat security-summary.md
-        
-    - name: Upload summary
-      uses: actions/upload-artifact@v4
-      with:
-        name: security-summary
-        path: security-summary.md
+        docker run -t owasp/zap2docker-stable zap-baseline.py \
+        -t http://host.docker.internal:3000 || true
