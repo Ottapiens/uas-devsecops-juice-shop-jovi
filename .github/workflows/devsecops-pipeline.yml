@@ -2,62 +2,83 @@ name: DevSecOps Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
   security-pipeline:
+    name: security-pipeline
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Source Code
+    # =================================================
+    # STEP 1 - CHECKOUT SOURCE CODE
+    # =================================================
+    - name: Checkout source code
       uses: actions/checkout@v3
 
-    # =========================
-    # SAST
-    # =========================
+    # =================================================
+    # STEP 2 - SETUP NODE & DEPENDENCIES (NO TEST)
+    # =================================================
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
         node-version: 18
 
-    - name: Install Dependencies (NO TEST)
-      run: npm install --ignore-scripts
+    - name: Install dependencies (disable test & script)
+      run: |
+        npm install --ignore-scripts
 
+    # =================================================
+    # STEP 3 - SAST (npm audit)
+    # =================================================
     - name: SAST - npm audit
       run: |
         npm audit --audit-level=high || true
 
-    # =========================
-    # SCA
-    # =========================
-    - name: Install Trivy (Official Script)
+    # =================================================
+    # STEP 4 - INSTALL TRIVY (OFFICIAL SCRIPT)
+    # =================================================
+    - name: Install Trivy
       run: |
-      sudo apt-get update
-      sudo apt-get install -y curl
-      curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
-      trivy --version
+        sudo apt-get update
+        sudo apt-get install -y curl
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+        trivy --version
 
-    - name: Trivy Filesystem Scan
-      run: trivy fs . || true
+    # =================================================
+    # STEP 5 - SCA (Filesystem Scan)
+    # =================================================
+    - name: SCA - Trivy filesystem scan
+      run: |
+        trivy fs . || true
 
-    # =========================
-    # BUILD CONTAINER
-    # =========================
-    - name: Build Docker Image
-      run: docker build -t juice-shop:latest .
+    # =================================================
+    # STEP 6 - BUILD DOCKER IMAGE
+    # =================================================
+    - name: Build Docker image
+      run: |
+        docker build -t juice-shop:latest .
 
-    - name: Trivy Image Scan
-      run: trivy image juice-shop:latest || true
+    # =================================================
+    # STEP 7 - CONTAINER SECURITY SCAN
+    # =================================================
+    - name: Container Scan - Trivy image
+      run: |
+        trivy image juice-shop:latest || true
 
-    # =========================
-    # DAST
-    # =========================
-    - name: Run OWASP Juice Shop
+    # =================================================
+    # STEP 8 - RUN APPLICATION (TARGET DAST)
+    # =================================================
+    - name: Run OWASP Juice Shop container
       run: |
         docker run -d -p 3000:3000 bkimminich/juice-shop
-        sleep 20
+        sleep 25
 
-    - name: DAST - OWASP ZAP Baseline
+    # =================================================
+    # STEP 9 - DAST (OWASP ZAP BASELINE)
+    # =================================================
+    - name: DAST - OWASP ZAP Baseline Scan
       run: |
         docker run -t owasp/zap2docker-stable zap-baseline.py \
         -t http://host.docker.internal:3000 || true
